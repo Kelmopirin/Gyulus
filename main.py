@@ -1,4 +1,4 @@
-from re import match
+﻿from re import match
 import asyncio
 
 import discord
@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from yt_dlp import YoutubeDL
 import json
 import random
+import re
 
 load_dotenv()
 
@@ -25,16 +26,21 @@ EG_OPTIONS = {
 }
 
 @bot.event
+async def setup_hook():
+    await bot.tree.sync()
+
+@bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
 
-@bot.command(name="hello")
+@bot.hybrid_command(name="hello")
 async def hello(ctx):
     await ctx.send("Halika!!! De fáj Trianon")
     
 
-@bot.command(name="play")
+@bot.hybrid_command(name="play")
 async def play(ctx, *, query: str):
+    await ctx.defer()
     if ctx.author.voice is None or ctx.author.voice.channel is None:
         await ctx.send("Előbb csatlakozz egy hangcsatornához!")
         return
@@ -73,45 +79,47 @@ async def play(ctx, *, query: str):
         after=playback_error,
     )
     await ctx.send(f"Lejátszás: **{query}**")
-@bot.command(name="stop")
+@bot.hybrid_command(name="stop")
 async def stop(ctx):
     if ctx.voice_client is not None and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
         await ctx.send("Leállítva a lejátszást.")
     else:
         await ctx.send("Nincs lejátszás folyamatban.")
-@bot.command(name="pause")
+@bot.hybrid_command(name="pause")
 async def pause(ctx):
     if ctx.voice_client is not None and ctx.voice_client.is_playing():
         ctx.voice_client.pause()
         await ctx.send("Szüneteltetve a lejátszást.")
     else:
         await ctx.send("Nincs lejátszás folyamatban.")
-@bot.command(name="resume")
+@bot.hybrid_command(name="resume")
 async def resume(ctx):
     if ctx.voice_client is not None and ctx.voice_client.is_paused():
         ctx.voice_client.resume()
         await ctx.send("Folytatva a lejátszást.")
     else:
         await ctx.send("Nincs szüneteltetett lejátszás.")
-@bot.command(name="set-volume")
+@bot.hybrid_command(name="set-volume")
 async def set_volume(ctx, volume: float):
     if ctx.voice_client is not None and ctx.voice_client.is_playing():
         ctx.voice_client.source.volume = max(0.0, min(volume, 1.0))
         await ctx.send(f"Hangerő beállítva: {ctx.voice_client.source.volume:.1f}")
     else:
         await ctx.send("Nincs lejátszás folyamatban.")
-@bot.command(name="leave")
+@bot.hybrid_command(name="leave")
 async def leave(ctx):
     if ctx.voice_client is not None:
         await ctx.voice_client.disconnect()
+        await ctx.send("Kilépve a hangcsatornából.")
     else:
         await ctx.send("Nem vagyok hangcsatornán.")
-@bot.command(name="p")
+@bot.hybrid_command(name="p")
 async def p(ctx, *, query: str):
-    return await play(ctx, query=query)
-@bot.command(name="download")
+    return await play.callback(ctx, query=query)
+@bot.hybrid_command(name="download")
 async def download(ctx, *, query: str):
+    await ctx.defer()
     query = query.split(" ")
     url = query[0]
     alias = query[1]
@@ -121,21 +129,34 @@ async def download(ctx, *, query: str):
     with open("songs.json", "w") as f:
         json.dump(playlist, f, indent=4)
     await ctx.send(f"Letöltve: **{alias}**")
-@bot.command(name="roll_dice")
+@bot.hybrid_command(name="r")
 async def roll_dice(ctx,*,query: str):
-    #pl: 1d20, 2d4, 3d6 +5
-    if "+" in query:
-        parts = query.strip().lower().split("+")
-        result = 0
-        for part in parts:
-            num, die = map(int, part.lower().split("d"))
-            result += sum(random.randint(1, die) for _ in range(num))
-    else:
-        num, die = map(int, query.lower().split("d"))
-        result = sum(random.randint(1, die) for _ in range(num))
-    await ctx.send(f"🎲 Dobás eredménye: **{result}**")
-@bot.command(name="takarodj")
-async def takarodj(ctx):
-    await leave(ctx)
-bot.run(os.getenv('DISCORD_TOKEN'))
+    match = re.fullmatch(r"\s*(\d+)d(\d+)\s*([+-])?\s*(\d+)?\s*", query.lower())
+    if match is None or (match.group(3) is None) != (match.group(4) is None):
+        await ctx.send("Hibás dobás. Használat: `1d20`, `2d4 + 3` vagy `3d6 - 2`.")
+        return
 
+    num, die = map(int, match.group(1, 2))
+    if die < 1:
+        await ctx.send("A kocka oldalainak száma legalább 1 legyen.")
+        return
+
+    rolls = [random.randint(1, die) for _ in range(num)]
+    modifier = int(match.group(4) or 0)
+    if match.group(3) == "-":
+        modifier *= -1
+    total = sum(rolls) + modifier
+
+    result = f"{num}d{die} ({', '.join(map(str, rolls))})"
+    if match.group(3) is not None:
+        result += f" {match.group(3)} {match.group(4)}"
+
+    await ctx.send(
+        f"{ctx.author.mention} 🎲\n"
+        f"**Result:** {result}\n"
+        f"**Total:** {total}"
+    )
+@bot.hybrid_command(name="takarodj")
+async def takarodj(ctx):
+    await leave.callback(ctx)
+bot.run(os.getenv('DISCORD_TOKEN'))
