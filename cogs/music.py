@@ -48,20 +48,35 @@ def find_js_runtime() -> tuple[str, str] | None:
     return None
 
 
-def ytdlp_extra_args() -> list[str]:
-    args = []
-    # A YouTube kinyeréshez JavaScript-futtatókörnyezet kell (deno, node vagy bun).
+def cookies_args() -> list[str]:
+    cookies = os.getenv("YTDLP_COOKIES_FILE")
+    if not cookies:
+        return []
+    cookies_path = Path(cookies)
+    if not cookies_path.is_absolute():
+        cookies_path = PROJECT_ROOT / cookies_path
+    return ["--cookies", str(cookies_path)] if cookies_path.is_file() else []
+
+
+def ytdlp_attempts() -> list[tuple[str, list[str]]]:
+    """A letöltési kísérletek sorrendben. Az első a legkevesebb memóriát használja."""
+    # JS-futtató és süti nélkül a YouTube JS-t nem igénylő kliensei használhatók.
+    attempts = [("JS és süti nélkül", ["--no-js-runtimes"])]
     runtime = find_js_runtime()
     if runtime:
-        args += ["--js-runtimes", f"{runtime[0]}:{runtime[1]}"]
-    cookies = os.getenv("YTDLP_COOKIES_FILE")
-    if cookies:
-        cookies_path = Path(cookies)
-        if not cookies_path.is_absolute():
-            cookies_path = PROJECT_ROOT / cookies_path
-        if cookies_path.is_file():
-            args += ["--cookies", str(cookies_path)]
-    return args
+        attempts.append(
+            ("süti + " + runtime[0], ["--js-runtimes", f"{runtime[0]}:{runtime[1]}", *cookies_args()])
+        )
+    elif cookies_args():
+        attempts.append(("süti", cookies_args()))
+    return attempts
+
+
+def ytdlp_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    # A deno alapból sok memóriát foglalhat, 256 MB-on ilyenkor kilövi a rendszer (returncode -9).
+    env.setdefault("DENO_V8_FLAGS", "--max-old-space-size=96")
+    return env
 
 
 class Music(commands.Cog):
@@ -91,41 +106,40 @@ class Music(commands.Cog):
         """Letölti a linket mp3-ként, és feltölti a tárhelyre. Visszaadja a címet, ha elérhető."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            try:
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    [
-                        sys.executable,
-                        "-m",
-                        "yt_dlp",
-                        *ytdlp_extra_args(),
-                        "-x",
-                        "--audio-format",
-                        "mp3",
-                        "--no-playlist",
-                        "--max-filesize",
-                        MAX_DOWNLOAD_SIZE,
-                        "--print",
-                        "title",
-                        "--no-simulate",
-                        "-o",
-                        str(temp_path / "track.%(ext)s"),
-                        "--",
-                        url,
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                )
-            except subprocess.CalledProcessError as error:
-                extra = ytdlp_extra_args()
-                print(
-                    "yt-dlp hiba:", error.stderr,
-                    "| js-runtime:", "--js-runtimes" in extra,
-                    "| süti használatban:", "--cookies" in extra,
-                    "| YTDLP_COOKIES_FILE beállítva:", bool(os.getenv("YTDLP_COOKIES_FILE")),
-                )
+            result = None
+            for label, extra_args in ytdlp_attempts():
+                try:
+                    result = await asyncio.to_thread(
+                        subprocess.run,
+                        [
+                            sys.executable,
+                            "-m",
+                            "yt_dlp",
+                            *extra_args,
+                            "-x",
+                            "--audio-format",
+                            "mp3",
+                            "--no-playlist",
+                            "--max-filesize",
+                            MAX_DOWNLOAD_SIZE,
+                            "--print",
+                            "title",
+                            "--no-simulate",
+                            "-o",
+                            str(temp_path / "track.%(ext)s"),
+                            "--",
+                            url,
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        env=ytdlp_environment(),
+                    )
+                    break
+                except subprocess.CalledProcessError as error:
+                    print(f"yt-dlp hiba ({label}): {error.stderr[-1500:]}")
+            if result is None:
                 raise DownloadError("A letöltés nem sikerült.")
 
             track_file = temp_path / "track.mp3"
