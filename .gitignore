@@ -1,5 +1,5 @@
 .env
-cookies.txt
+cookies/
 __pycache__/
 *.pyc
 music/*.mp3
