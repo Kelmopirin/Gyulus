@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import re
 import subprocess
+import sys
 import tempfile
 from datetime import timedelta
 from pathlib import Path
@@ -59,7 +60,9 @@ class Music(commands.Cog):
                 result = await asyncio.to_thread(
                     subprocess.run,
                     [
-                        "yt-dlp",
+                        sys.executable,
+                        "-m",
+                        "yt_dlp",
                         "-x",
                         "--audio-format",
                         "mp3",
@@ -79,9 +82,8 @@ class Music(commands.Cog):
                     text=True,
                     encoding="utf-8",
                 )
-            except FileNotFoundError:
-                raise DownloadError("A letöltéshez telepíteni kell az `yt-dlp` programot.")
-            except subprocess.CalledProcessError:
+            except subprocess.CalledProcessError as error:
+                print(f"yt-dlp hiba: {error.stderr}")
                 raise DownloadError("A letöltés nem sikerült.")
 
             track_file = temp_path / "track.mp3"
