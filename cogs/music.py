@@ -1,27 +1,21 @@
 import asyncio
 import hashlib
-import os
 import re
-import shutil
-import subprocess
-import sys
-import tempfile
 from datetime import timedelta
-from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
 
-from storage import TEMP_PREFIX, Storage
+from storage import TEMP_PREFIX, Storage, job_key, result_key
 
 EG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -stream_loop -1",
     "options": "-vn",
 }
 ALIAS_PATTERN = re.compile(r"[\w\- ]{1,64}")
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TEMP_MAX_AGE = timedelta(hours=1)
-MAX_DOWNLOAD_SIZE = "100M"
+JOB_TIMEOUT = 180
+JOB_POLL_INTERVAL = 2
 
 
 class DownloadError(Exception):
@@ -32,69 +26,10 @@ def is_url(text: str) -> bool:
     return text.lower().startswith(("http://", "https://"))
 
 
-def find_js_runtime() -> tuple[str, str] | None:
-    # A pip-pel telepített futtatók gyakran olyan mappába kerülnek, ami nincs a PATH-on.
-    search_path = os.pathsep.join(
-        [
-            os.environ.get("PATH", ""),
-            str(Path.home() / ".local" / "bin"),
-            str(Path(sys.executable).parent),
-        ]
-    )
-    for runtime in ("deno", "node", "bun"):
-        found = shutil.which(runtime, path=search_path)
-        if found:
-            return runtime, found
-    return None
-
-
-def cookies_args() -> list[str]:
-    cookies = os.getenv("YTDLP_COOKIES_FILE")
-    if not cookies:
-        return []
-    cookies_path = Path(cookies)
-    if not cookies_path.is_absolute():
-        cookies_path = PROJECT_ROOT / cookies_path
-    return ["--cookies", str(cookies_path)] if cookies_path.is_file() else []
-
-
-def ytdlp_attempts() -> list[tuple[str, list[str]]]:
-    """A letöltési kísérletek sorrendben. Az első a legkevesebb memóriát használja."""
-    # JS-futtató és süti nélkül a YouTube JS-t nem igénylő kliensei használhatók.
-    attempts = [
-        ("JS és süti nélkül", ["--no-js-runtimes"]),
-        (
-            "android_vr kliens",
-            ["--no-js-runtimes", "--extractor-args", "youtube:player_client=android_vr"],
-        ),
-        (
-            "tv + web_embedded kliens",
-            ["--no-js-runtimes", "--extractor-args", "youtube:player_client=tv,web_embedded", *cookies_args()],
-        ),
-    ]
-    runtime = find_js_runtime()
-    if runtime:
-        attempts.append(
-            ("süti + " + runtime[0], ["--js-runtimes", f"{runtime[0]}:{runtime[1]}", *cookies_args()])
-        )
-    elif cookies_args():
-        attempts.append(("süti", cookies_args()))
-    return attempts
-
-
-def ytdlp_environment() -> dict[str, str]:
-    env = os.environ.copy()
-    # A deno alapból sok memóriát foglalhat, 256 MB-on ilyenkor kilövi a rendszer (returncode -9).
-    env.setdefault("DENO_V8_FLAGS", "--max-old-space-size=96")
-    return env
-
-
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.storage = Storage()
-        # 256 MB RAM mellett egyszerre csak egy letöltés/konvertálás futhat.
-        self.download_lock = asyncio.Lock()
 
     async def cog_load(self) -> None:
         self.cleanup_temp.start()
@@ -112,74 +47,44 @@ class Music(commands.Cog):
         if removed:
             print(f"Temp takarítás: {removed} fájl törölve.")
 
-    async def _download_to_storage(self, url: str, name: str) -> str | None:
-        """Letölti a linket mp3-ként, és feltölti a tárhelyre. Visszaadja a címet, ha elérhető."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            result = None
-            for label, extra_args in ytdlp_attempts():
-                try:
-                    result = await asyncio.to_thread(
-                        subprocess.run,
-                        [
-                            sys.executable,
-                            "-m",
-                            "yt_dlp",
-                            *extra_args,
-                            "-x",
-                            "--audio-format",
-                            "mp3",
-                            "--no-playlist",
-                            "--max-filesize",
-                            MAX_DOWNLOAD_SIZE,
-                            "--print",
-                            "title",
-                            "--no-simulate",
-                            "-o",
-                            str(temp_path / "track.%(ext)s"),
-                            "--",
-                            url,
-                        ],
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        env=ytdlp_environment(),
-                    )
-                    break
-                except subprocess.CalledProcessError as error:
-                    print(f"yt-dlp hiba ({label}): {error.stderr[-1500:]}")
-            if result is None:
-                raise DownloadError("A letöltés nem sikerült.")
+    async def _request_download(self, url: str, key: str) -> str | None:
+        """Letöltési kérést ad a workernek, és megvárja az eredményt. Visszaadja a címet, ha elérhető."""
+        job_id = hashlib.sha1(f"{key}|{url}".encode()).hexdigest()[:16]
+        try:
+            await self.storage.delete(result_key(job_id))
+            await self.storage.put_json(job_key(job_id), {"url": url, "key": key})
 
-            track_file = temp_path / "track.mp3"
-            if not track_file.exists():
-                raise DownloadError(f"A letöltés nem sikerült (a fájl nagyobb, mint {MAX_DOWNLOAD_SIZE}?).")
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + JOB_TIMEOUT
+            while loop.time() < deadline:
+                result = await self.storage.get_json(result_key(job_id))
+                if result is not None:
+                    await self.storage.delete(result_key(job_id))
+                    if result.get("ok"):
+                        return result.get("title")
+                    raise DownloadError(result.get("error") or "A letöltés nem sikerült.")
+                await asyncio.sleep(JOB_POLL_INTERVAL)
 
-            try:
-                await self.storage.upload(track_file, name)
-            except Exception as error:
-                print(f"Feltöltési hiba: {error!r}")
-                raise DownloadError("A feltöltés a zenetárba nem sikerült.")
-
-        lines = result.stdout.strip().splitlines()
-        return lines[-1] if lines else None
+            await self.storage.delete(job_key(job_id))
+        except DownloadError:
+            raise
+        except Exception as error:
+            print(f"Tárhely hiba: {error!r}")
+            raise DownloadError("Nem sikerült elérni a zenetárat.")
+        raise DownloadError("A letöltő szerver nem válaszolt időben, próbáld újra később.")
 
     async def _prepare_temp_track(self, url: str) -> tuple[str, str]:
         """Ideiglenes számot készít a linkből. Visszaadja a tárhelykulcsot és a megjelenített nevet."""
-        name = f"{TEMP_PREFIX}{hashlib.sha1(url.encode()).hexdigest()[:16]}"
+        key = f"{TEMP_PREFIX}{hashlib.sha1(url.encode()).hexdigest()[:16]}"
         try:
-            if await self.storage.exists(name):
-                return name, url
+            if await self.storage.exists(key):
+                return key, url
         except Exception as error:
             print(f"Tárhely hiba: {error!r}")
             raise DownloadError("Nem sikerült elérni a zenetárat.")
 
-        if self.download_lock.locked():
-            raise DownloadError("Már folyik egy letöltés, próbáld újra később.")
-        async with self.download_lock:
-            title = await self._download_to_storage(url, name)
-        return name, title or url
+        title = await self._request_download(url, key)
+        return key, title or url
 
     @commands.hybrid_command(name="play")
     async def play(self, ctx: commands.Context, *, query: str) -> None:
@@ -282,24 +187,15 @@ class Music(commands.Cog):
         await ctx.defer()
         url, separator, alias = query.strip().partition(" ")
         alias = alias.strip()
-        if (
-            not separator
-            or not is_url(url)
-            or not ALIAS_PATTERN.fullmatch(alias)
-        ):
+        if not separator or not is_url(url) or not ALIAS_PATTERN.fullmatch(alias):
             await ctx.send("Használat: `/download <URL> <név>` (a név betű, szám, szóköz, `-` vagy `_`).")
             return
 
-        if self.download_lock.locked():
-            await ctx.send("Már folyik egy letöltés, próbáld újra később.")
+        try:
+            await self._request_download(url, alias.lower())
+        except DownloadError as error:
+            await ctx.send(str(error))
             return
-
-        async with self.download_lock:
-            try:
-                await self._download_to_storage(url, alias.lower())
-            except DownloadError as error:
-                await ctx.send(str(error))
-                return
 
         await ctx.send(f"Letöltve: **{alias}**")
 

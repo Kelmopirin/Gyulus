@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,6 +11,17 @@ from botocore.config import Config
 PRESIGNED_URL_TTL = 6 * 60 * 60
 TRACK_SUFFIX = ".mp3"
 TEMP_PREFIX = "temp/"
+JOBS_PREFIX = "jobs/"
+JOB_SUFFIX = ".job"
+RESULT_SUFFIX = ".result"
+
+
+def job_key(job_id: str) -> str:
+    return f"{JOBS_PREFIX}{job_id}{JOB_SUFFIX}"
+
+
+def result_key(job_id: str) -> str:
+    return f"{JOBS_PREFIX}{job_id}{RESULT_SUFFIX}"
 
 
 class Storage:
@@ -49,16 +61,45 @@ class Storage:
         cutoff = datetime.now(timezone.utc) - max_age
         expired = []
         paginator = self.client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=TEMP_PREFIX):
-            for item in page.get("Contents", []):
-                if item["LastModified"] < cutoff:
-                    expired.append({"Key": item["Key"]})
+        # Az ideiglenes számok mellett az elakadt letöltési kérések és eredmények is törlődnek.
+        for prefix in (TEMP_PREFIX, JOBS_PREFIX):
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                for item in page.get("Contents", []):
+                    if item["LastModified"] < cutoff:
+                        expired.append({"Key": item["Key"]})
         for start in range(0, len(expired), 1000):
             self.client.delete_objects(
                 Bucket=self.bucket,
                 Delete={"Objects": expired[start : start + 1000], "Quiet": True},
             )
         return len(expired)
+
+    def _put_json(self, key: str, data: dict) -> None:
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=json.dumps(data).encode("utf-8"),
+            ContentType="application/json",
+        )
+
+    def _get_json(self, key: str) -> dict | None:
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=key)
+        except self.client.exceptions.NoSuchKey:
+            return None
+        return json.loads(response["Body"].read().decode("utf-8"))
+
+    def _delete(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket, Key=key)
+
+    def _list_keys(self, prefix: str, suffix: str) -> list[str]:
+        keys = []
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            for item in page.get("Contents", []):
+                if item["Key"].endswith(suffix):
+                    keys.append(item["Key"])
+        return sorted(keys)
 
     def _presigned_url(self, name: str) -> str:
         return self.client.generate_presigned_url(
@@ -89,3 +130,15 @@ class Storage:
 
     async def cleanup_temp(self, max_age: timedelta) -> int:
         return await asyncio.to_thread(self._cleanup_temp, max_age)
+
+    async def put_json(self, key: str, data: dict) -> None:
+        await asyncio.to_thread(self._put_json, key, data)
+
+    async def get_json(self, key: str) -> dict | None:
+        return await asyncio.to_thread(self._get_json, key)
+
+    async def delete(self, key: str) -> None:
+        await asyncio.to_thread(self._delete, key)
+
+    async def list_keys(self, prefix: str, suffix: str) -> list[str]:
+        return await asyncio.to_thread(self._list_keys, prefix, suffix)
