@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import random
 import re
 from datetime import timedelta
 
@@ -8,10 +9,8 @@ from discord.ext import commands, tasks
 
 from storage import TEMP_PREFIX, Storage, job_key, result_key
 
-EG_OPTIONS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -stream_loop -1",
-    "options": "-vn",
-}
+EG_BEFORE_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+EG_LOOP_OPTION = "-stream_loop -1"
 ALIAS_PATTERN = re.compile(r"[\w\- ]{1,64}")
 TEMP_MAX_AGE = timedelta(hours=1)
 JOB_TIMEOUT = 180
@@ -26,10 +25,24 @@ def is_url(text: str) -> bool:
     return text.lower().startswith(("http://", "https://"))
 
 
+class GuildPlayer:
+    """Egy szerver lejátszási állapota."""
+
+    def __init__(self) -> None:
+        self.loop = True
+        self.track: str | None = None
+        self.token = 0
+        self.text_channel: discord.abc.Messageable | None = None
+
+
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.storage = Storage()
+        self.players: dict[int, GuildPlayer] = {}
+
+    def player(self, guild_id: int) -> GuildPlayer:
+        return self.players.setdefault(guild_id, GuildPlayer())
 
     async def cog_load(self) -> None:
         self.cleanup_temp.start()
@@ -127,7 +140,6 @@ class Music(commands.Cog):
                 return
             if not is_url(query) and display_name == source:
                 display_name = query
-        track_url = await self.storage.presigned_url(track)
 
         voice_channel = ctx.author.voice.channel
         permissions = voice_channel.permissions_for(ctx.guild.me)
@@ -152,22 +164,75 @@ class Music(commands.Cog):
             await ctx.send("Nem sikerült csatlakozni a hangcsatornához, próbáld újra később.")
             return
 
-        if voice_client.is_playing():
+        await self._start_track(voice_client, ctx.channel, track, display_name)
+
+    async def _start_track(
+        self,
+        voice_client: discord.VoiceClient,
+        text_channel: discord.abc.Messageable,
+        track: str,
+        display_name: str,
+    ) -> None:
+        state = self.player(voice_client.guild.id)
+        track_url = await self.storage.presigned_url(track)
+
+        # A token érvényteleníti a korábbi lejátszás befejezési visszahívását (pl. leállításkor).
+        state.token += 1
+        token = state.token
+        state.track = track
+        state.text_channel = text_channel
+
+        if voice_client.is_playing() or voice_client.is_paused():
             voice_client.stop()
 
-        def playback_error(error: Exception | None) -> None:
+        def playback_finished(error: Exception | None) -> None:
             if error:
                 print(f"Lejátszási hiba: {error!r}")
+            asyncio.run_coroutine_threadsafe(
+                self._on_playback_finished(voice_client, token), self.bot.loop
+            )
 
+        before_options = EG_BEFORE_OPTIONS + (f" {EG_LOOP_OPTION}" if state.loop else "")
         voice_client.play(
-            discord.FFmpegPCMAudio(track_url, **EG_OPTIONS),
-            after=playback_error,
+            discord.FFmpegPCMAudio(track_url, before_options=before_options, options="-vn"),
+            after=playback_finished,
         )
-        await ctx.send(f"Lejátszás: **{display_name}**")
+        await text_channel.send(f"Lejátszás: **{display_name}**")
+
+    async def _on_playback_finished(self, voice_client: discord.VoiceClient, token: int) -> None:
+        state = self.player(voice_client.guild.id)
+        if token != state.token or not voice_client.is_connected():
+            return
+        state.token += 1
+
+        try:
+            tracks = await self.storage.list_tracks()
+            if state.loop and state.track is not None:
+                next_track = state.track
+            else:
+                choices = [name for name in tracks if name != state.track] or tracks
+                if not choices:
+                    return
+                next_track = random.choice(choices)
+            await self._start_track(voice_client, state.text_channel, next_track, next_track)
+        except Exception as error:
+            print(f"Következő szám indítási hiba: {error!r}")
+
+    @commands.hybrid_command(name="setloop")
+    async def setloop(self, ctx: commands.Context, value: bool) -> None:
+        """True: az aktuális szám ismétlődik. False: a szám végén véletlen szám indul a zenetárból."""
+        self.player(ctx.guild.id).loop = value
+        if value:
+            await ctx.send("Ismétlés bekapcsolva: a szám újra és újra lejátszódik.")
+        else:
+            await ctx.send("Ismétlés kikapcsolva: a szám végén véletlen szám indul a zenetárból.")
+        if ctx.voice_client is not None and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+            await ctx.send("A beállítás a jelenlegi szám lejátszása után lép életbe.")
 
     @commands.hybrid_command(name="stop")
     async def stop(self, ctx: commands.Context) -> None:
         if ctx.voice_client is not None and ctx.voice_client.is_playing():
+            self.player(ctx.guild.id).token += 1
             ctx.voice_client.stop()
             await ctx.send("Leállítva a lejátszást.")
         else:
@@ -200,6 +265,7 @@ class Music(commands.Cog):
     @commands.hybrid_command(name="leave")
     async def leave(self, ctx: commands.Context) -> None:
         if ctx.voice_client is not None:
+            self.player(ctx.guild.id).token += 1
             await ctx.voice_client.disconnect()
             await ctx.send("Kilépve a hangcsatornából.")
         else:
