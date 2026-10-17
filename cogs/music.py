@@ -231,6 +231,22 @@ class Music(commands.Cog):
         if ctx.voice_client is not None and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
             await ctx.send("A beállítás a jelenlegi szám lejátszása után lép életbe.")
 
+    @commands.hybrid_command(name="skip")
+    async def skip(self, ctx: commands.Context) -> None:
+        """Átugrás: a következő véletlen szám indul a zenetárból."""
+        if ctx.voice_client is None or not ctx.voice_client.is_connected():
+            await ctx.send("A bot nincs hangcsatornában.")
+            return
+        await ctx.defer()
+        state = self.player(ctx.guild.id)
+        tracks = await self.storage.list_tracks()
+        choices = [name for name in tracks if name != state.track] or tracks
+        if not choices:
+            await ctx.send("A zenetár üres.")
+            return
+        next_track = random.choice(choices)
+        await self._start_track(ctx.voice_client, ctx.channel, next_track, next_track)
+
     @commands.hybrid_command(name="stop")
     async def stop(self, ctx: commands.Context) -> None:
         if ctx.voice_client is not None and ctx.voice_client.is_playing():
