@@ -118,12 +118,27 @@ class Music(commands.Cog):
         track_url = await self.storage.presigned_url(track)
 
         voice_channel = ctx.author.voice.channel
-        if ctx.voice_client is None:
-            voice_client = await voice_channel.connect()
-        else:
-            voice_client = ctx.voice_client
-            if voice_client.channel != voice_channel:
+        permissions = voice_channel.permissions_for(ctx.guild.me)
+        if not (permissions.view_channel and permissions.connect and permissions.speak):
+            await ctx.send("A botnak nincs **Csatlakozás** és **Beszéd** jogosultsága ezen a hangcsatornán.")
+            return
+
+        voice_client = ctx.voice_client
+        if voice_client is not None and not voice_client.is_connected():
+            await voice_client.disconnect(force=True)
+            voice_client = None
+
+        try:
+            if voice_client is None:
+                voice_client = await voice_channel.connect(timeout=30)
+            elif voice_client.channel != voice_channel:
                 await voice_client.move_to(voice_channel)
+        except (asyncio.TimeoutError, discord.ClientException) as error:
+            print(f"Hangcsatlakozási hiba: {error!r}")
+            if ctx.voice_client is not None:
+                await ctx.voice_client.disconnect(force=True)
+            await ctx.send("Nem sikerült csatlakozni a hangcsatornához, próbáld újra később.")
+            return
 
         if voice_client.is_playing():
             voice_client.stop()
