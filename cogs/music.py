@@ -30,6 +30,7 @@ class GuildPlayer:
 
     def __init__(self) -> None:
         self.loop = True
+        self.volume = 1.0
         self.track: str | None = None
         self.token = 0
         self.text_channel: discord.abc.Messageable | None = None
@@ -193,10 +194,11 @@ class Music(commands.Cog):
             )
 
         before_options = EG_BEFORE_OPTIONS + (f" {EG_LOOP_OPTION}" if state.loop else "")
-        voice_client.play(
+        source = discord.PCMVolumeTransformer(
             discord.FFmpegPCMAudio(track_url, before_options=before_options, options="-vn"),
-            after=playback_finished,
+            volume=state.volume,
         )
+        voice_client.play(source, after=playback_finished)
         await text_channel.send(f"Lejátszás: **{display_name}**")
 
     async def _on_playback_finished(self, voice_client: discord.VoiceClient, token: int) -> None:
@@ -256,11 +258,13 @@ class Music(commands.Cog):
 
     @commands.hybrid_command(name="set-volume")
     async def set_volume(self, ctx: commands.Context, volume: float) -> None:
-        if ctx.voice_client is not None and ctx.voice_client.is_playing():
-            ctx.voice_client.source.volume = max(0.0, min(volume, 1.0))
-            await ctx.send(f"Hangerő beállítva: {ctx.voice_client.source.volume:.1f}")
-        else:
-            await ctx.send("Nincs lejátszás folyamatban.")
+        """Hangerő 0.0 és 1.0 között."""
+        state = self.player(ctx.guild.id)
+        state.volume = max(0.0, min(volume, 1.0))
+        source = ctx.voice_client.source if ctx.voice_client is not None else None
+        if isinstance(source, discord.PCMVolumeTransformer):
+            source.volume = state.volume
+        await ctx.send(f"Hangerő beállítva: {state.volume:.1f}")
 
     @commands.hybrid_command(name="leave")
     async def leave(self, ctx: commands.Context) -> None:
