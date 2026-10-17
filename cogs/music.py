@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +29,34 @@ class DownloadError(Exception):
 
 def is_url(text: str) -> bool:
     return text.lower().startswith(("http://", "https://"))
+
+
+def find_js_runtime() -> tuple[str, str] | None:
+    # A pip-pel telepített futtatók gyakran olyan mappába kerülnek, ami nincs a PATH-on.
+    search_path = os.pathsep.join(
+        [
+            os.environ.get("PATH", ""),
+            str(Path.home() / ".local" / "bin"),
+            str(Path(sys.executable).parent),
+        ]
+    )
+    for runtime in ("deno", "node", "bun"):
+        found = shutil.which(runtime, path=search_path)
+        if found:
+            return runtime, found
+    return None
+
+
+def ytdlp_extra_args() -> list[str]:
+    args = []
+    # A YouTube kinyeréshez JavaScript-futtatókörnyezet kell (deno, node vagy bun).
+    runtime = find_js_runtime()
+    if runtime:
+        args += ["--js-runtimes", f"{runtime[0]}:{runtime[1]}"]
+    cookies = os.getenv("YTDLP_COOKIES_FILE")
+    if cookies and Path(cookies).is_file():
+        args += ["--cookies", cookies]
+    return args
 
 
 class Music(commands.Cog):
@@ -63,6 +93,7 @@ class Music(commands.Cog):
                         sys.executable,
                         "-m",
                         "yt_dlp",
+                        *ytdlp_extra_args(),
                         "-x",
                         "--audio-format",
                         "mp3",

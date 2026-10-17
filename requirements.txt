@@ -1,4 +1,5 @@
 discord.py[voice]
 python-dotenv
-yt-dlp
+yt-dlp[default]
+deno
 boto3
