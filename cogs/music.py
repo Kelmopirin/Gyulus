@@ -93,28 +93,40 @@ class Music(commands.Cog):
             await ctx.send("Előbb csatlakozz egy hangcsatornához!")
             return
 
-        query = query.strip()
-        if is_url(query):
-            await ctx.send("Letöltés folyamatban, egy pillanat...")
-            try:
-                track, display_name = await self._prepare_temp_track(query)
-            except DownloadError as error:
-                await ctx.send(str(error))
-                return
-        else:
-            query = query.lower()
+        query = " ".join(query.split())
+        if not query:
+            await ctx.send("Adj meg egy számot, linket vagy keresőszöveget.")
+            return
+
+        track = None
+        display_name = query
+        if not is_url(query):
+            lowered = query.lower()
             try:
                 tracks = await self.storage.list_tracks()
             except Exception as error:
                 print(f"Tárhely hiba: {error!r}")
                 await ctx.send("Nem sikerült elérni a zenetárat.")
                 return
+            track = next((name for name in tracks if lowered in name.lower()), None)
+            if track is not None:
+                display_name = track
 
-            track = next((name for name in tracks if query and query in name.lower()), None)
-            if track is None:
-                await ctx.send(f"Nincs ilyen szám a zenetárban: `{query}`")
+        if track is None:
+            # Link vagy a zenetárban nem található szöveg: az első YouTube-találatot töltjük le.
+            source = query if is_url(query) else f"ytsearch1:{query[:200]}"
+            await ctx.send(
+                "Letöltés folyamatban, egy pillanat..."
+                if is_url(query)
+                else f"Nincs ilyen a zenetárban, keresés YouTube-on: `{query}`"
+            )
+            try:
+                track, display_name = await self._prepare_temp_track(source)
+            except DownloadError as error:
+                await ctx.send(str(error))
                 return
-            display_name = track
+            if not is_url(query) and display_name == source:
+                display_name = query
         track_url = await self.storage.presigned_url(track)
 
         voice_channel = ctx.author.voice.channel

@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from downloader import DownloadError, download_mp3, is_url  # noqa: E402
+from downloader import DownloadError, download_mp3, is_search, is_url  # noqa: E402
 from storage import JOBS_PREFIX, JOB_SUFFIX, Storage, result_key  # noqa: E402
 
 POLL_INTERVAL = 5
@@ -24,7 +24,7 @@ TARGET_PATTERN = re.compile(r"temp/[0-9a-f]{16}|[\w\- ]{1,64}")
 async def run_job(storage: Storage, job: dict) -> dict:
     url = job.get("url")
     target = job.get("key")
-    if not isinstance(url, str) or not is_url(url):
+    if not isinstance(url, str) or not (is_url(url) or is_search(url)):
         return {"ok": False, "error": "Érvénytelen link."}
     if not isinstance(target, str) or not TARGET_PATTERN.fullmatch(target):
         return {"ok": False, "error": "Érvénytelen név."}

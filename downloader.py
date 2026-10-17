@@ -18,6 +18,10 @@ def is_url(text: str) -> bool:
     return text.lower().startswith(("http://", "https://"))
 
 
+def is_search(text: str) -> bool:
+    return text.startswith("ytsearch1:") and len(text) > len("ytsearch1:")
+
+
 def find_js_runtime() -> tuple[str, str] | None:
     # A pip-pel telepített futtatók gyakran olyan mappába kerülnek, ami nincs a PATH-on.
     search_path = os.pathsep.join(
