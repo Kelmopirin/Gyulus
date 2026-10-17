@@ -1,19 +1,31 @@
 import asyncio
+import hashlib
 import re
 import subprocess
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
-from storage import Storage
+from storage import TEMP_PREFIX, Storage
 
 EG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -stream_loop -1",
     "options": "-vn",
 }
 ALIAS_PATTERN = re.compile(r"[\w\- ]{1,64}")
+TEMP_MAX_AGE = timedelta(hours=1)
+MAX_DOWNLOAD_SIZE = "100M"
+
+
+class DownloadError(Exception):
+    pass
+
+
+def is_url(text: str) -> bool:
+    return text.lower().startswith(("http://", "https://"))
 
 
 class Music(commands.Cog):
@@ -23,6 +35,84 @@ class Music(commands.Cog):
         # 256 MB RAM mellett egyszerre csak egy letöltés/konvertálás futhat.
         self.download_lock = asyncio.Lock()
 
+    async def cog_load(self) -> None:
+        self.cleanup_temp.start()
+
+    async def cog_unload(self) -> None:
+        self.cleanup_temp.cancel()
+
+    @tasks.loop(minutes=10)
+    async def cleanup_temp(self) -> None:
+        try:
+            removed = await self.storage.cleanup_temp(TEMP_MAX_AGE)
+        except Exception as error:
+            print(f"Temp takarítási hiba: {error!r}")
+            return
+        if removed:
+            print(f"Temp takarítás: {removed} fájl törölve.")
+
+    async def _download_to_storage(self, url: str, name: str) -> str | None:
+        """Letölti a linket mp3-ként, és feltölti a tárhelyre. Visszaadja a címet, ha elérhető."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            try:
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    [
+                        "yt-dlp",
+                        "-x",
+                        "--audio-format",
+                        "mp3",
+                        "--no-playlist",
+                        "--max-filesize",
+                        MAX_DOWNLOAD_SIZE,
+                        "--print",
+                        "title",
+                        "--no-simulate",
+                        "-o",
+                        str(temp_path / "track.%(ext)s"),
+                        "--",
+                        url,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                )
+            except FileNotFoundError:
+                raise DownloadError("A letöltéshez telepíteni kell az `yt-dlp` programot.")
+            except subprocess.CalledProcessError:
+                raise DownloadError("A letöltés nem sikerült.")
+
+            track_file = temp_path / "track.mp3"
+            if not track_file.exists():
+                raise DownloadError(f"A letöltés nem sikerült (a fájl nagyobb, mint {MAX_DOWNLOAD_SIZE}?).")
+
+            try:
+                await self.storage.upload(track_file, name)
+            except Exception as error:
+                print(f"Feltöltési hiba: {error!r}")
+                raise DownloadError("A feltöltés a zenetárba nem sikerült.")
+
+        lines = result.stdout.strip().splitlines()
+        return lines[-1] if lines else None
+
+    async def _prepare_temp_track(self, url: str) -> tuple[str, str]:
+        """Ideiglenes számot készít a linkből. Visszaadja a tárhelykulcsot és a megjelenített nevet."""
+        name = f"{TEMP_PREFIX}{hashlib.sha1(url.encode()).hexdigest()[:16]}"
+        try:
+            if await self.storage.exists(name):
+                return name, url
+        except Exception as error:
+            print(f"Tárhely hiba: {error!r}")
+            raise DownloadError("Nem sikerült elérni a zenetárat.")
+
+        if self.download_lock.locked():
+            raise DownloadError("Már folyik egy letöltés, próbáld újra később.")
+        async with self.download_lock:
+            title = await self._download_to_storage(url, name)
+        return name, title or url
+
     @commands.hybrid_command(name="play")
     async def play(self, ctx: commands.Context, *, query: str) -> None:
         await ctx.defer()
@@ -30,18 +120,28 @@ class Music(commands.Cog):
             await ctx.send("Előbb csatlakozz egy hangcsatornához!")
             return
 
-        query = query.strip().lower()
-        try:
-            tracks = await self.storage.list_tracks()
-        except Exception as error:
-            print(f"Tárhely hiba: {error!r}")
-            await ctx.send("Nem sikerült elérni a zenetárat.")
-            return
+        query = query.strip()
+        if is_url(query):
+            await ctx.send("Letöltés folyamatban, egy pillanat...")
+            try:
+                track, display_name = await self._prepare_temp_track(query)
+            except DownloadError as error:
+                await ctx.send(str(error))
+                return
+        else:
+            query = query.lower()
+            try:
+                tracks = await self.storage.list_tracks()
+            except Exception as error:
+                print(f"Tárhely hiba: {error!r}")
+                await ctx.send("Nem sikerült elérni a zenetárat.")
+                return
 
-        track = next((name for name in tracks if query and query in name.lower()), None)
-        if track is None:
-            await ctx.send(f"Nincs ilyen szám a zenetárban: `{query}`")
-            return
+            track = next((name for name in tracks if query and query in name.lower()), None)
+            if track is None:
+                await ctx.send(f"Nincs ilyen szám a zenetárban: `{query}`")
+                return
+            display_name = track
         track_url = await self.storage.presigned_url(track)
 
         voice_channel = ctx.author.voice.channel
@@ -63,7 +163,7 @@ class Music(commands.Cog):
             discord.FFmpegPCMAudio(track_url, **EG_OPTIONS),
             after=playback_error,
         )
-        await ctx.send(f"Lejátszás: **{track}**")
+        await ctx.send(f"Lejátszás: **{display_name}**")
 
     @commands.hybrid_command(name="stop")
     async def stop(self, ctx: commands.Context) -> None:
@@ -116,7 +216,7 @@ class Music(commands.Cog):
         alias = alias.strip()
         if (
             not separator
-            or not url.lower().startswith(("http://", "https://"))
+            or not is_url(url)
             or not ALIAS_PATTERN.fullmatch(alias)
         ):
             await ctx.send("Használat: `/download <URL> <név>` (a név betű, szám, szóköz, `-` vagy `_`).")
@@ -127,35 +227,11 @@ class Music(commands.Cog):
             return
 
         async with self.download_lock:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir)
-                try:
-                    await asyncio.to_thread(
-                        subprocess.run,
-                        [
-                            "yt-dlp",
-                            "-x",
-                            "--audio-format",
-                            "mp3",
-                            "--no-playlist",
-                            "-o",
-                            str(temp_path / "track.%(ext)s"),
-                            "--",
-                            url,
-                        ],
-                        check=True,
-                    )
-                    await self.storage.upload(temp_path / "track.mp3", alias.lower())
-                except FileNotFoundError:
-                    await ctx.send("A letöltéshez telepíteni kell az `yt-dlp` programot.")
-                    return
-                except subprocess.CalledProcessError:
-                    await ctx.send("A letöltés nem sikerült.")
-                    return
-                except Exception as error:
-                    print(f"Feltöltési hiba: {error!r}")
-                    await ctx.send("A feltöltés a zenetárba nem sikerült.")
-                    return
+            try:
+                await self._download_to_storage(url, alias.lower())
+            except DownloadError as error:
+                await ctx.send(str(error))
+                return
 
         await ctx.send(f"Letöltve: **{alias}**")
 

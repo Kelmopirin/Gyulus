@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import boto3
@@ -8,6 +9,7 @@ from botocore.config import Config
 
 PRESIGNED_URL_TTL = 6 * 60 * 60
 TRACK_SUFFIX = ".mp3"
+TEMP_PREFIX = "temp/"
 
 
 class Storage:
@@ -30,9 +32,33 @@ class Storage:
         for page in paginator.paginate(Bucket=self.bucket):
             for item in page.get("Contents", []):
                 key = item["Key"]
+                if key.startswith(TEMP_PREFIX):
+                    continue
                 if key.lower().endswith(TRACK_SUFFIX):
                     names.append(key[: -len(TRACK_SUFFIX)])
         return sorted(names, key=str.lower)
+
+    def _exists(self, name: str) -> bool:
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=f"{name}{TRACK_SUFFIX}")
+        except self.client.exceptions.ClientError:
+            return False
+        return True
+
+    def _cleanup_temp(self, max_age: timedelta) -> int:
+        cutoff = datetime.now(timezone.utc) - max_age
+        expired = []
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=TEMP_PREFIX):
+            for item in page.get("Contents", []):
+                if item["LastModified"] < cutoff:
+                    expired.append({"Key": item["Key"]})
+        for start in range(0, len(expired), 1000):
+            self.client.delete_objects(
+                Bucket=self.bucket,
+                Delete={"Objects": expired[start : start + 1000], "Quiet": True},
+            )
+        return len(expired)
 
     def _presigned_url(self, name: str) -> str:
         return self.client.generate_presigned_url(
@@ -57,3 +83,9 @@ class Storage:
 
     async def upload(self, path: Path, name: str) -> None:
         await asyncio.to_thread(self._upload, path, name)
+
+    async def exists(self, name: str) -> bool:
+        return await asyncio.to_thread(self._exists, name)
+
+    async def cleanup_temp(self, max_age: timedelta) -> int:
+        return await asyncio.to_thread(self._cleanup_temp, max_age)
