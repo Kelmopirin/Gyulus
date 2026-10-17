@@ -61,7 +61,17 @@ def cookies_args() -> list[str]:
 def ytdlp_attempts() -> list[tuple[str, list[str]]]:
     """A letöltési kísérletek sorrendben. Az első a legkevesebb memóriát használja."""
     # JS-futtató és süti nélkül a YouTube JS-t nem igénylő kliensei használhatók.
-    attempts = [("JS és süti nélkül", ["--no-js-runtimes"])]
+    attempts = [
+        ("JS és süti nélkül", ["--no-js-runtimes"]),
+        (
+            "android_vr kliens",
+            ["--no-js-runtimes", "--extractor-args", "youtube:player_client=android_vr"],
+        ),
+        (
+            "tv + web_embedded kliens",
+            ["--no-js-runtimes", "--extractor-args", "youtube:player_client=tv,web_embedded", *cookies_args()],
+        ),
+    ]
     runtime = find_js_runtime()
     if runtime:
         attempts.append(
