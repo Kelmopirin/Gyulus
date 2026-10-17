@@ -19,6 +19,7 @@ EG_OPTIONS = {
     "options": "-vn",
 }
 ALIAS_PATTERN = re.compile(r"[\w\- ]{1,64}")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TEMP_MAX_AGE = timedelta(hours=1)
 MAX_DOWNLOAD_SIZE = "100M"
 
@@ -54,8 +55,12 @@ def ytdlp_extra_args() -> list[str]:
     if runtime:
         args += ["--js-runtimes", f"{runtime[0]}:{runtime[1]}"]
     cookies = os.getenv("YTDLP_COOKIES_FILE")
-    if cookies and Path(cookies).is_file():
-        args += ["--cookies", cookies]
+    if cookies:
+        cookies_path = Path(cookies)
+        if not cookies_path.is_absolute():
+            cookies_path = PROJECT_ROOT / cookies_path
+        if cookies_path.is_file():
+            args += ["--cookies", str(cookies_path)]
     return args
 
 
@@ -114,7 +119,13 @@ class Music(commands.Cog):
                     encoding="utf-8",
                 )
             except subprocess.CalledProcessError as error:
-                print(f"yt-dlp hiba: {error.stderr}")
+                extra = ytdlp_extra_args()
+                print(
+                    "yt-dlp hiba:", error.stderr,
+                    "| js-runtime:", "--js-runtimes" in extra,
+                    "| süti használatban:", "--cookies" in extra,
+                    "| YTDLP_COOKIES_FILE beállítva:", bool(os.getenv("YTDLP_COOKIES_FILE")),
+                )
                 raise DownloadError("A letöltés nem sikerült.")
 
             track_file = temp_path / "track.mp3"
