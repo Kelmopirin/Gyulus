@@ -7,7 +7,7 @@ Discord zenebot (discord.py). A zenéket egy S3-kompatibilis tárhelyről (Cloud
 | Fájl | Szerep |
 |------|--------|
 | `main.py` | Bot indítása, Cogok betöltése, parancsok szinkronizálása |
-| `cogs/general.py` | `/hello`, `/r` (dobókocka), „viszlát” elköszönés |
+| `cogs/general.py` | `/hello`, `/r` (dobókocka) |
 | `cogs/music.py` | Zenelejátszás, zenetár, letöltés kérése |
 | `cogs/greeting.py` | Időzített esküvői köszöntés |
 | `storage.py` | S3/R2 réteg (listázás, feltöltés, presigned URL, takarítás, job-sor) |
@@ -27,7 +27,6 @@ Discord zenebot (discord.py). A zenéket egy S3-kompatibilis tárhelyről (Cloud
 | `/download` | Letöltés és feltöltés a zenetárba |
 | `/hello` | Köszönés |
 | `/r 1d20` | Dobókocka |
-| `viszlát` | A bot elköszön, ha önálló chatüzenetként írod be |
 
 ## Működés
 

@@ -1,7 +1,6 @@
 import random
 import re
 
-import discord
 from discord.ext import commands
 
 
@@ -12,14 +11,6 @@ class General(commands.Cog):
     @commands.hybrid_command(name="hello")
     async def hello(self, ctx: commands.Context) -> None:
         await ctx.send("Halika!!! De fáj Trianon")
-
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot:
-            return
-
-        if message.content.strip().casefold().rstrip("!.?") == "viszlát":
-            await message.channel.send("Viszlát! 👋")
 
     @commands.hybrid_command(name="r")
     async def roll_dice(self, ctx: commands.Context, *, query: str) -> None:
