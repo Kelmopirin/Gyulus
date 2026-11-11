@@ -29,6 +29,8 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
         async def history(**kwargs):
             channel.history_args = kwargs
             for message in messages:
+                if not hasattr(message, "raw_mentions"):
+                    message.raw_mentions = []
                 yield message
 
         channel = SimpleNamespace(history=history, history_args=None)
@@ -36,8 +38,9 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
             defer=AsyncMock(),
             send=AsyncMock(),
             channel=channel,
+            me=SimpleNamespace(id=123456789012345678, display_name="Gyuli"),
             author=SimpleNamespace(
-                name="Tester", avatar=None,
+                name="Tester", display_name="Tesztelő", avatar=None,
                 display_avatar=SimpleNamespace(url="https://example.com/avatar.png"),
             ),
         )
@@ -61,11 +64,73 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
         await self.run_summary(ctx, "17:05")
         self.assertIn("Nem találtam üzenetet", ctx.send.await_args.args[0])
 
+    async def test_summary_uses_display_names_and_clean_mentions(self):
+        messages = [
+            SimpleNamespace(
+                author=SimpleNamespace(bot=False, name="username", display_name="Becenév"),
+                created_at=datetime.now(timezone.utc),
+                content="Szia <@123456789012345678>",
+                clean_content="Szia @Másik becenév",
+            ),
+            SimpleNamespace(
+                author=SimpleNamespace(bot=False, name="other", display_name="Megjelenített név"),
+                created_at=datetime.now(timezone.utc),
+                clean_content="Szia",
+            ),
+        ]
+        ctx = self.make_context(messages)
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Összefoglaló"), finish_reason="stop")]
+        )
+        with patch("cogs.ai.client.chat.completions.create", return_value=response) as create:
+            await self.run_summary(ctx, "17:05")
+        prompt = create.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("Becenév: Szia @Másik becenév", prompt)
+        self.assertIn("Megjelenített név: Szia", prompt)
+        self.assertNotIn("<@123456789012345678>", prompt)
+        self.assertIn("Discord-megjelenített nevükön", create.call_args.kwargs["messages"][0]["content"])
+        self.assertEqual(ctx.send.await_args.kwargs["embed"].author.name, "Tesztelő")
+
+    async def test_identifies_gyulus_and_bot_mentions(self):
+        messages = [
+            SimpleNamespace(
+                author=SimpleNamespace(bot=False, display_name="Beszélő"),
+                created_at=datetime.now(timezone.utc),
+                clean_content="Gyulus segített",
+                raw_mentions=[],
+            ),
+            SimpleNamespace(
+                author=SimpleNamespace(bot=False, display_name="Másik"),
+                created_at=datetime.now(timezone.utc),
+                clean_content="@Gyuli gyere",
+                raw_mentions=[123456789012345678],
+            ),
+            SimpleNamespace(
+                author=SimpleNamespace(bot=False, display_name="Harmadik"),
+                created_at=datetime.now(timezone.utc),
+                clean_content="@Gyuli szia",
+                raw_mentions=[123456789012345679],
+            ),
+        ]
+        ctx = self.make_context(messages)
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Összefoglaló"), finish_reason="stop")]
+        )
+        with patch("cogs.ai.client.chat.completions.create", return_value=response) as create:
+            await self.run_summary(ctx, "17:05")
+        system, conversation = create.call_args.kwargs["messages"]
+        self.assertIn("Te vagy Gyulus", system["content"])
+        self.assertIn("első személyben", system["content"])
+        self.assertIn("Kétértelmű", system["content"])
+        self.assertIn("Beszélő: Gyulus segített", conversation["content"])
+        self.assertIn("Másik [Gyulus botot megemlítették]: @Gyuli gyere", conversation["content"])
+        self.assertIn("Harmadik: @Gyuli szia", conversation["content"])
+
     async def test_success_without_custom_avatar(self):
         message = SimpleNamespace(
-            author=SimpleNamespace(bot=False, name="User"),
+            author=SimpleNamespace(bot=False, name="User", display_name="User"),
             created_at=datetime.now(timezone.utc),
-            content="Hello",
+            clean_content="Hello",
         )
         ctx = self.make_context([message])
         response = SimpleNamespace(
@@ -86,9 +151,9 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_api_error(self):
         message = SimpleNamespace(
-            author=SimpleNamespace(bot=False, name="User"),
+            author=SimpleNamespace(bot=False, name="User", display_name="User"),
             created_at=datetime.now(timezone.utc),
-            content="Hello",
+            clean_content="Hello",
         )
         ctx = self.make_context([message])
         with patch("cogs.ai.client.chat.completions.create", side_effect=RuntimeError("test")):
@@ -97,9 +162,9 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_previous_day_and_discord_length_limit(self):
         message = SimpleNamespace(
-            author=SimpleNamespace(bot=False, name="User"),
+            author=SimpleNamespace(bot=False, name="User", display_name="User"),
             created_at=datetime.now(timezone.utc),
-            content="Hello",
+            clean_content="Hello",
         )
         ctx = self.make_context([message])
         response = SimpleNamespace(
@@ -118,9 +183,9 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_token_limit_is_reported(self):
         message = SimpleNamespace(
-            author=SimpleNamespace(bot=False, name="User"),
+            author=SimpleNamespace(bot=False, name="User", display_name="User"),
             created_at=datetime.now(timezone.utc),
-            content="Hello",
+            clean_content="Hello",
         )
         ctx = self.make_context([message])
         response = SimpleNamespace(
@@ -132,9 +197,9 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_api_response(self):
         message = SimpleNamespace(
-            author=SimpleNamespace(bot=False, name="User"),
+            author=SimpleNamespace(bot=False, name="User", display_name="User"),
             created_at=datetime.now(timezone.utc),
-            content="Hello",
+            clean_content="Hello",
         )
         ctx = self.make_context([message])
         response = SimpleNamespace(
@@ -154,9 +219,9 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
         for since, end, now, start, stop, tokens in cases:
             with self.subTest(since=since, end=end, now=now):
                 message = SimpleNamespace(
-                    author=SimpleNamespace(bot=False, name="User"),
+                    author=SimpleNamespace(bot=False, name="User", display_name="User"),
                     created_at=now,
-                    content="Hello",
+                    clean_content="Hello",
                 )
                 ctx = self.make_context([message])
                 response = SimpleNamespace(
@@ -196,9 +261,9 @@ class SummaryTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(since=since, end=end):
                 timestamp = datetime(2026, 11, 10, 12, tzinfo=timezone.utc)
                 message = SimpleNamespace(
-                    author=SimpleNamespace(bot=False, name="User"),
+                    author=SimpleNamespace(bot=False, name="User", display_name="User"),
                     created_at=timestamp,
-                    content="Hello",
+                    clean_content="Hello",
                 )
                 ctx = self.make_context([message])
                 response = SimpleNamespace(

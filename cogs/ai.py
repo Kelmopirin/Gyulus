@@ -11,7 +11,6 @@ load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-
 def summary_limits(elapsed: timedelta) -> tuple[int, int]:
     hours = elapsed.total_seconds() / 3600
     if hours < 1:
@@ -125,7 +124,10 @@ class AI(commands.Cog):
             if is_date:
                 timestamp = timestamp.astimezone()
             time_format = "%Y-%m-%d %H:%M:%S" if is_date else "%H:%M:%S"
-            messages_text.append(f"[{timestamp.strftime(time_format)}] {message.author.name}: {message.content}")
+            bot_mention = " [Gyulus botot megemlítették]" if ctx.me.id in message.raw_mentions else ""
+            messages_text.append(
+                f"[{timestamp.strftime(time_format)}] {message.author.display_name}{bot_mention}: {message.clean_content}"
+            )
 
         if not messages_text:
             period = f"{since} és {end} között" if end is not None else (
@@ -149,6 +151,11 @@ class AI(commands.Cog):
                         "content": "Te egy Discord csatorna üzeneteinek összefoglalója vagy. "
                                    "Írj magyar nyelvű összefoglalót az alábbi beszélgetésről. "
                                    "Emeld ki a legfontosabb pontokat és témákat. "
+                                   "Az emberekre a megadott Discord-megjelenített nevükön hivatkozz. "
+                                   "Te vagy Gyulus, a beszélgetés Discord-botja. "
+                                   "Ha Gyulusról mint botról vagy a megjelölt botemlítésről beszélnek, "
+                                   "az rád vonatkozik; ilyenkor magadra első személyben hivatkozz. "
+                                   "Kétértelmű esetben ne feltételezd, hogy minden Gyulus nevű személy te vagy. "
                                    "A részletességet igazítsd az időtartamhoz és a beszélgetés tartalmához; "
                                    "ne találj ki részleteket, ha kevés az információ. "
                                    f"Az összefoglaló legfeljebb {max_characters} karakter legyen.",
@@ -185,7 +192,7 @@ class AI(commands.Cog):
                 since if is_date else f"{since} óta"
             )
             embed.set_footer(text=f"Összefoglalva: {period}")
-            embed.set_author(name=ctx.author.name, icon_url=ctx.author.display_avatar.url)
+            embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
 
             await ctx.send(embed=embed)
 

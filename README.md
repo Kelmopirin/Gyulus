@@ -41,6 +41,8 @@ Discord zenebot (discord.py). A zenéket egy S3-kompatibilis tárhelyről (Cloud
 - Időpontként például `17`, `17:05` vagy `17.05` adható meg. A `/summary 17 19` a legutóbbi lezárult 17–19 óra közötti időszakot összegzi; a kezdő időpontot beleveszi, a záró időpontot nem. Az időszak átnyúlhat éjfélen; azonos kezdő és záró időpont 24 órát jelent.
 - Dátumként `2026-11-10` vagy `2026.11.10` használható. Záró dátum nélkül a megadott napot, záró dátummal mindkét napot és a köztük lévő napokat is összegzi, a bot gépének helyi ideje szerint. A mai napból a már eltelt időt veszi figyelembe; jövőbeli vagy fordított dátumtartomány és dátum/időpont keverése nem megengedett.
 - A Discord slash parancs `since` és `end` mezői a legutóbbi hét nap dátumait és egész órákat javasolnak; más érvényes értékeket is be lehet írni.
+- Az összefoglaló a jelenlegi szerverbeceneveket használja; becenév hiányában a Discord-megjelenített név, majd a felhasználónév szerepel. Az említések is megjelenített névvé alakulnak, ha a Discord fel tudja oldani őket.
+- Az összefoglaló utasítást kap arra, hogy Gyulust a botként, saját magaként értelmezze; a botnak címzett Discord-említéseket azonosító alapján külön megjelöli.
 
 ## Telepítés (bot)
 
