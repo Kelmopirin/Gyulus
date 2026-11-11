@@ -9,7 +9,7 @@ load_dotenv()
 
 class GyulusBot(commands.Bot):
     async def setup_hook(self) -> None:
-        for extension in ("cogs.general", "cogs.music", "cogs.greeting"):
+        for extension in ("cogs.general", "cogs.music", "cogs.greeting", "cogs.ai"):
             await self.load_extension(extension)
         await self.tree.sync()
 
